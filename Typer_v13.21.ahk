@@ -300,6 +300,8 @@ Global DictPromptRefText := Map()    ; ref из скрытой 3-й колонк
 Global DictGlobalRefs := Map()       ; ref из скрытой 4-й колонки общего поиска → {Item, Full}
 Global PanelOpenPromptsByDefault := true ; F9 открывается на вкладке «Промпты»
 Global PanelPromptClickCopy := true      ; ЛКМ по промпту — копия в буфер
+Global DataPasswordsHidden := false      ; v13.22: пароли Данных без намёков (OSD, превью панели, карточка)
+Global DictDataPasswordsHiddenCheck := 0
 Global TyperStartupStep := 0             ; этап стартовой расшифровки (для индикатора)
 Global TyperStartupSteps := 11
 Global TyperStartupStage := ""
@@ -1466,6 +1468,7 @@ LoadSettingsInternal() {
     PgKeysModeEnabled := false
     PanelOpenPromptsByDefault := true ; v13.17
     PanelPromptClickCopy := true      ; v13.17
+    global DataPasswordsHidden := false ; v13.22
     DictMode := "full"                ; v13.18
     PanelPromptCatFilter := "ALL"     ; v13.21
     PromptLastCaptureCat := "OTHER"   ; v13.21
@@ -1502,6 +1505,10 @@ ParseSettingsLine(line) {
         PanelPromptClickCopy := (val != "0")
     else if (key = "dict_mode") ; v13.18
         DictMode := NormalizeDictMode(val)
+    else if (key = "data_passwords_hidden") { ; v13.22
+        global DataPasswordsHidden
+        DataPasswordsHidden := (val = "1")
+    }
     else if (key = "panel_prompt_cat") ; v13.21
         PanelPromptCatFilter := (val = "ALL") ? "ALL" : NormalizePromptCat(val)
     else if (key = "prompt_last_cat") ; v13.21
@@ -1527,6 +1534,7 @@ ParseSettingsLine(line) {
 BuildSettingsPlainText() {
     global InsertCaptureEnabled, WordOsdAutoHideEnabled, WordOsdAutoHideMs, DictShowFrequencyColumn, DictSearchIncludeWords, DictPanelColumnWidths, PermanentTyperWindowRules
     global EnableLCtrlComma, EnableRCtrlPeriod, PgKeysModeEnabled, ColorHighlight, PanelOpenPromptsByDefault, PanelPromptClickCopy, DictMode, PanelPromptCatFilter, PromptLastCaptureCat ; v13.21
+    global DataPasswordsHidden ; v13.22
     output := "insert_capture=" (InsertCaptureEnabled ? "1" : "0") "`n"
         . "word_osd_autohide=" (WordOsdAutoHideEnabled ? "1" : "0") "`n"
         . "word_osd_autohide_ms=" WordOsdAutoHideMs "`n"
@@ -1538,6 +1546,7 @@ BuildSettingsPlainText() {
         . "panel_open_prompts=" (PanelOpenPromptsByDefault ? "1" : "0") "`n"
         . "panel_prompt_click_copy=" (PanelPromptClickCopy ? "1" : "0") "`n"
         . "dict_mode=" DictMode "`n"
+        . "data_passwords_hidden=" (DataPasswordsHidden ? "1" : "0") "`n"
         . "panel_prompt_cat=" PanelPromptCatFilter "`n"
         . "prompt_last_cat=" PromptLastCaptureCat "`n"
         . "accent_color=" ColorHighlight "`n"
@@ -3812,9 +3821,12 @@ TruncateDataText(text, maxLen := 22) {
 MaskDataPasswordSparse(password, maxLen := 7) {
     ; v13.16: короткий намёк — каждый второй символ, не больше maxLen знаков
     ; (Qwerty123 → Q.e.t.1…). Многоточие — только если пароль длиннее.
+    global DataPasswordsHidden
     password := SanitizeDataField(password, true)
     if (password = "")
         return ""
+    if DataPasswordsHidden ; v13.22: скрытный режим — ни символов, ни длины
+        return "•••"
     out := ""
     Loop Parse, password {
         if (StrLen(out) >= maxLen) {
@@ -4381,7 +4393,8 @@ OpenDataCardGui(dataId := "", options := 0) {
     EdLogin.Value := prefillLogin
 
     DataGui.Add("Text", "xm y+10 w520 h18 cAFAFAF", "Пароль")
-    EdPass := DataGui.Add("Edit", "xm y+4 w520 h26 Background2D2D2D cF0F0F0")
+    global DataPasswordsHidden
+    EdPass := DataGui.Add("Edit", "xm y+4 w520 h26 Background2D2D2D cF0F0F0" (DataPasswordsHidden ? " Password" : ""))
     EdPass.Value := prefillPassword
 
     DataGui.Add("Text", "xm y+10 w520 h18 cAFAFAF", "Описание")
@@ -8659,6 +8672,10 @@ ShowDictionaryGUI() {
     DictSettingsPanel.Push(DictBtnPass)
     DictSettingsPanel.Push(DictBtnHotstrings)
     DictSettingsPanel.Push(DictBtnSaveNow)
+    ; v13.22: скрытный режим паролей Данных (по умолчанию выкл. — намёк виден).
+    DictDataPasswordsHiddenCheck := DictGui.Add("CheckBox", "x728 y155 w142 h22 cF0F0F0 Hidden Checked" (DataPasswordsHidden ? 1 : 0), "Скрыть пароли")
+    DictDataPasswordsHiddenCheck.OnEvent("Click", ToggleDataPasswordsHiddenFromGui)
+    DictSettingsPanel.Push(DictDataPasswordsHiddenCheck)
 
     ; --- Секция: Ввод и хоткеи ----------------------------------------------
     ; v13.18: секции сдвинуты — добавлен выбор режима словаря.
@@ -9834,7 +9851,8 @@ BuildDataPanelPreviewText(data) {
 
     AppendDataPreviewLine(&out, "Префикс", data.Key)
     AppendDataPreviewLine(&out, "Логин", data.Login)
-    AppendDataPreviewLine(&out, "Пароль", data.Password)
+    global DataPasswordsHidden
+    AppendDataPreviewLine(&out, "Пароль", (DataPasswordsHidden && data.Password != "") ? "••••••" : data.Password)
     AppendDataPreviewLine(&out, "Алиасы", data.Aliases)
     AppendDataPreviewLine(&out, "Описание", data.Note)
 
@@ -11817,6 +11835,16 @@ TogglePanelPromptClickCopyFromGui(ctrl, *) {
     global PanelPromptClickCopy
     PanelPromptClickCopy := !!ctrl.Value
     SaveSettingsInternal()
+}
+
+ToggleDataPasswordsHiddenFromGui(ctrl, *) {
+    ; v13.22: OSD Данных, превью панели и карточка — без символов пароля.
+    global DataPasswordsHidden
+    DataPasswordsHidden := !!ctrl.Value
+    SaveSettingsInternal()
+    HidePanelPreviewOsd()
+    ToolTip(DataPasswordsHidden ? "🔒 Пароли Данных скрыты" : "Пароли Данных — с коротким намёком")
+    SetTimer(() => ToolTip(), -1400)
 }
 
 HandleDataPileModeChanged(ctrl, *) {
