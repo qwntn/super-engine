@@ -300,6 +300,7 @@ Global DictPromptRefText := Map()    ; ref из скрытой 3-й колонк
 Global DictGlobalRefs := Map()       ; ref из скрытой 4-й колонки общего поиска → {Item, Full}
 Global PanelOpenPromptsByDefault := true ; F9 открывается на вкладке «Промпты»
 Global PanelPromptClickCopy := true      ; ЛКМ по промпту — копия в буфер
+Global DataPasswordsHidden := false      ; v13.22: пароли Данных без намёков (OSD, превью панели, карточка)
 Global TyperStartupStep := 0             ; этап стартовой расшифровки (для индикатора)
 Global TyperStartupSteps := 11
 Global TyperStartupStage := ""
@@ -336,6 +337,7 @@ Global HotInsertCallbacks := Map()
 Global RegisteredHotInsertCombos := Map()
 Global RegisteredHotInsertAliasCombos := Map() ; дополнительные numpad-hotkeys для NumLock Off/On
 Global DevAllowShortMasterPassword := false
+Global MinMasterPasswordLen := 15 ; v13.22: и для первого запуска, и для смены пароля
 ; Флаг завершения автозагрузки: пока false, хоткеи занесения в базы (F14-семейство)
 ; не работают. Это защита от потери данных: раньше Shift+F14 во время загрузки
 ; добавлял промпт в ещё пустую PromptDB, падал на несозданном индексе, а последующее
@@ -1455,6 +1457,7 @@ HasNoSpaceWord(word) {
 LoadSettingsInternal() {
     global SettingsFile, InsertCaptureEnabled, WordOsdAutoHideEnabled, WordOsdAutoHideMs, DictShowFrequencyColumn, DictSearchIncludeWords, DictPanelColumnWidths, PermanentTyperWindowRules
     global EnableLCtrlComma, EnableRCtrlPeriod, PgKeysModeEnabled, PanelOpenPromptsByDefault, PanelPromptClickCopy, DictMode, PanelPromptCatFilter, PromptLastCaptureCat ; v13.21
+    global DataPasswordsHidden ; v13.22
     DictShowFrequencyColumn := false
     DictSearchIncludeWords := false
     DictPanelColumnWidths := Map()
@@ -1466,6 +1469,7 @@ LoadSettingsInternal() {
     PgKeysModeEnabled := false
     PanelOpenPromptsByDefault := true ; v13.17
     PanelPromptClickCopy := true      ; v13.17
+    DataPasswordsHidden := false      ; v13.22
     DictMode := "full"                ; v13.18
     PanelPromptCatFilter := "ALL"     ; v13.21
     PromptLastCaptureCat := "OTHER"   ; v13.21
@@ -1475,6 +1479,7 @@ LoadSettingsInternal() {
 ParseSettingsLine(line) {
     global InsertCaptureEnabled, WordOsdAutoHideEnabled, WordOsdAutoHideMs, DictShowFrequencyColumn, DictSearchIncludeWords, DictPanelColumnWidths, PermanentTyperWindowRules
     global EnableLCtrlComma, EnableRCtrlPeriod, PgKeysModeEnabled, PanelOpenPromptsByDefault, PanelPromptClickCopy, DictMode, PanelPromptCatFilter, PromptLastCaptureCat ; v13.21
+    global DataPasswordsHidden ; v13.22
     parts := StrSplit(line, "=",, 2)
     if (parts.Length != 2)
         return
@@ -1502,6 +1507,8 @@ ParseSettingsLine(line) {
         PanelPromptClickCopy := (val != "0")
     else if (key = "dict_mode") ; v13.18
         DictMode := NormalizeDictMode(val)
+    else if (key = "data_passwords_hidden") ; v13.22
+        DataPasswordsHidden := (val = "1")
     else if (key = "panel_prompt_cat") ; v13.21
         PanelPromptCatFilter := (val = "ALL") ? "ALL" : NormalizePromptCat(val)
     else if (key = "prompt_last_cat") ; v13.21
@@ -1527,6 +1534,7 @@ ParseSettingsLine(line) {
 BuildSettingsPlainText() {
     global InsertCaptureEnabled, WordOsdAutoHideEnabled, WordOsdAutoHideMs, DictShowFrequencyColumn, DictSearchIncludeWords, DictPanelColumnWidths, PermanentTyperWindowRules
     global EnableLCtrlComma, EnableRCtrlPeriod, PgKeysModeEnabled, ColorHighlight, PanelOpenPromptsByDefault, PanelPromptClickCopy, DictMode, PanelPromptCatFilter, PromptLastCaptureCat ; v13.21
+    global DataPasswordsHidden ; v13.22
     output := "insert_capture=" (InsertCaptureEnabled ? "1" : "0") "`n"
         . "word_osd_autohide=" (WordOsdAutoHideEnabled ? "1" : "0") "`n"
         . "word_osd_autohide_ms=" WordOsdAutoHideMs "`n"
@@ -1538,6 +1546,7 @@ BuildSettingsPlainText() {
         . "panel_open_prompts=" (PanelOpenPromptsByDefault ? "1" : "0") "`n"
         . "panel_prompt_click_copy=" (PanelPromptClickCopy ? "1" : "0") "`n"
         . "dict_mode=" DictMode "`n"
+        . "data_passwords_hidden=" (DataPasswordsHidden ? "1" : "0") "`n"
         . "panel_prompt_cat=" PanelPromptCatFilter "`n"
         . "prompt_last_cat=" PromptLastCaptureCat "`n"
         . "accent_color=" ColorHighlight "`n"
@@ -3812,9 +3821,12 @@ TruncateDataText(text, maxLen := 22) {
 MaskDataPasswordSparse(password, maxLen := 7) {
     ; v13.16: короткий намёк — каждый второй символ, не больше maxLen знаков
     ; (Qwerty123 → Q.e.t.1…). Многоточие — только если пароль длиннее.
+    global DataPasswordsHidden
     password := SanitizeDataField(password, true)
     if (password = "")
         return ""
+    if DataPasswordsHidden ; v13.22: скрытный режим — ни символов, ни длины
+        return "•••"
     out := ""
     Loop Parse, password {
         if (StrLen(out) >= maxLen) {
@@ -4062,7 +4074,7 @@ RestoreSecretClipboardIfStillCurrent(expectedText := "", stamp := 0, reason := "
     try {
         ; Восстанавливаем только если пользователь за это время не скопировал что-то новое.
         ; Если буфер уже отличается от нашего временного пароля — не трогаем его.
-        if (A_Clipboard != expectedText) {
+        if (A_Clipboard !== expectedText) { ; v13.22: с учётом регистра (!= в v2 регистронезависим)
             ClearSecretClipboardState("changed-before-" reason)
             return false
         }
@@ -4381,7 +4393,7 @@ OpenDataCardGui(dataId := "", options := 0) {
     EdLogin.Value := prefillLogin
 
     DataGui.Add("Text", "xm y+10 w520 h18 cAFAFAF", "Пароль")
-    EdPass := DataGui.Add("Edit", "xm y+4 w520 h26 Background2D2D2D cF0F0F0")
+    EdPass := DataGui.Add("Edit", "xm y+4 w520 h26 Background2D2D2D cF0F0F0" (DataPasswordsHidden ? " Password" : ""))
     EdPass.Value := prefillPassword
 
     DataGui.Add("Text", "xm y+10 w520 h18 cAFAFAF", "Описание")
@@ -4637,7 +4649,8 @@ AuthenticateUser() {
     ExistingStores := IsFirstRun ? ListExistingEncryptedStoreFiles() : []
     ; Первый запуск: новый пароль вводится дважды. Объект — чтобы вложенная
     ; функция могла менять состояние между нажатиями Enter.
-    FirstRunState := {Pending: ""}
+    ; v13.22: WasActive/ShownTick — для WatchAuthFocus (см. ниже).
+    FirstRunState := {Pending: "", WasActive: false, ShownTick: 0}
 
     AuthGui := Gui("-Caption +AlwaysOnTop +ToolWindow +Border")
     AuthGui.MarginX := 10
@@ -4650,11 +4663,24 @@ AuthenticateUser() {
     AuthGui.OnEvent("Close", (*) => ExitApp())
     Btn.OnEvent("Click", CheckPassword)
 
-    SetTimer(WatchAuthFocus, 100)
     AuthGui.Show("AutoSize Center")
+    FirstRunState.ShownTick := A_TickCount
+    try WinActivate("ahk_id " AuthGui.Hwnd)
+    SetTimer(WatchAuthFocus, 100)
     WinWaitClose("ahk_id " AuthGui.Hwnd)
 
+    ; v13.22: MsgBox забирает фокус у окна пароля, и WatchAuthFocus закрывал Typer
+    ; раньше, чем сообщение можно было прочитать. На время MsgBox наблюдатель выключен.
+    AuthErrorBox(text) {
+        SetTimer(WatchAuthFocus, 0)
+        MsgBox(text, "Typer", "Iconx")
+        try WinActivate("ahk_id " AuthGui.Hwnd)
+        try PassEdit.Focus()
+        SetTimer(WatchAuthFocus, 100)
+    }
+
     CheckPassword(*) {
+        global DevAllowShortMasterPassword, MinMasterPasswordLen
         EnteredPass := PassEdit.Value
         if (EnteredPass = "")
             return
@@ -4686,6 +4712,13 @@ AuthenticateUser() {
         if (IsFirstRun) {
             ; v13.16: новый пароль — дважды и с учётом регистра.
             if (FirstRunState.Pending == "") {
+                ; v13.22: минимальная длина — как при смене пароля.
+                if (StrLen(EnteredPass) < MinMasterPasswordLen && !DevAllowShortMasterPassword) {
+                    PassEdit.Value := ""
+                    ToolTip("Пароль — минимум " MinMasterPasswordLen " символов", 0, 48)
+                    SetTimer(() => ToolTip(), -2500)
+                    return
+                }
                 FirstRunState.Pending := EnteredPass
                 PassEdit.Value := ""
                 ToolTip("Повторите новый пароль", 0, 48)
@@ -4700,12 +4733,12 @@ AuthenticateUser() {
                 return
             }
             if !WriteEncryptedTextVerified(LockFile, "VERIFIED_OK", EnteredPass, "lock:first-run") {
-                MsgBox("Не удалось создать lock-контейнер. Проверь права на запись в svc_core.", "Typer", "Iconx")
+                AuthErrorBox("Не удалось создать lock-контейнер. Проверь права на запись в svc_core.")
                 return
             }
 
             if (ReadDecryptedTextWithBak(LockFile, EnteredPass) != "VERIFIED_OK") {
-                MsgBox("Не удалось проверить lock-контейнер после записи. Пароль не принят.", "Typer", "Iconx")
+                AuthErrorBox("Не удалось проверить lock-контейнер после записи. Пароль не принят.")
                 return
             }
 
@@ -4726,7 +4759,23 @@ AuthenticateUser() {
     }
 
     WatchAuthFocus() {
-        if WinExist("ahk_id " AuthGui.Hwnd) && !WinActive("ahk_id " AuthGui.Hwnd)
+        hwnd := AuthGui.Hwnd
+        if !WinExist("ahk_id " hwnd)
+            return
+        if WinActive("ahk_id " hwnd) {
+            FirstRunState.WasActive := true
+            return
+        }
+        ; Окно уже было в фокусе и потеряло его — тихий выход (как раньше).
+        if FirstRunState.WasActive
+            ExitApp()
+        ; v13.22: окно ни разу не получило фокус (автозагрузка, перезапуск после UAC:
+        ; Windows не отдаёт фокус новому процессу) — раньше это был мгновенный выход.
+        ; Первые 3 с пробуем активировать, дальше ждём клика; через 60 с — выход.
+        elapsed := A_TickCount - FirstRunState.ShownTick
+        if (elapsed < 3000)
+            try WinActivate("ahk_id " hwnd)
+        else if (elapsed > 60000)
             ExitApp()
     }
 }
@@ -8659,6 +8708,10 @@ ShowDictionaryGUI() {
     DictSettingsPanel.Push(DictBtnPass)
     DictSettingsPanel.Push(DictBtnHotstrings)
     DictSettingsPanel.Push(DictBtnSaveNow)
+    ; v13.22: скрытный режим паролей Данных (по умолчанию выкл. — намёк виден).
+    DictDataPasswordsHiddenCheck := DictGui.Add("CheckBox", "x728 y155 w142 h22 cF0F0F0 Hidden Checked" (DataPasswordsHidden ? 1 : 0), "Скрыть пароли")
+    DictDataPasswordsHiddenCheck.OnEvent("Click", ToggleDataPasswordsHiddenFromGui)
+    DictSettingsPanel.Push(DictDataPasswordsHiddenCheck)
 
     ; --- Секция: Ввод и хоткеи ----------------------------------------------
     ; v13.18: секции сдвинуты — добавлен выбор режима словаря.
@@ -9830,11 +9883,12 @@ AppendDataPreviewLine(&outRef, label, value) {
 }
 
 BuildDataPanelPreviewText(data) {
+    global DataPasswordsHidden
     out := ""
 
     AppendDataPreviewLine(&out, "Префикс", data.Key)
     AppendDataPreviewLine(&out, "Логин", data.Login)
-    AppendDataPreviewLine(&out, "Пароль", data.Password)
+    AppendDataPreviewLine(&out, "Пароль", (DataPasswordsHidden && data.Password != "") ? "••••••" : data.Password)
     AppendDataPreviewLine(&out, "Алиасы", data.Aliases)
     AppendDataPreviewLine(&out, "Описание", data.Note)
 
@@ -11819,6 +11873,16 @@ TogglePanelPromptClickCopyFromGui(ctrl, *) {
     SaveSettingsInternal()
 }
 
+ToggleDataPasswordsHiddenFromGui(ctrl, *) {
+    ; v13.22: OSD Данных, превью панели и карточка — без символов пароля.
+    global DataPasswordsHidden
+    DataPasswordsHidden := !!ctrl.Value
+    SaveSettingsInternal()
+    HidePanelPreviewOsd()
+    ToolTip(DataPasswordsHidden ? "🔒 Пароли Данных скрыты" : "Пароли Данных — с коротким намёком")
+    SetTimer(() => ToolTip(), -1400)
+}
+
 HandleDataPileModeChanged(ctrl, *) {
     global DictDataPileMode
     DictDataPileMode := (ctrl.Value = 2) ? "NOPILE" : ((ctrl.Value = 3) ? "PILE" : "ALL")
@@ -12054,9 +12118,9 @@ ChangePasswordGUI() {
             ToolTip("⚠️ Пароли не совпадают!"), SetTimer(() => ToolTip(), -2000)
             return
         }
-        if (StrLen(P1) < 15) {
+        if (StrLen(P1) < MinMasterPasswordLen) {
             if !DevAllowShortMasterPassword {
-                ToolTip("⚠️ Лучше использовать пароль от 15 символов"), SetTimer(() => ToolTip(), -2200)
+                ToolTip("⚠️ Лучше использовать пароль от " MinMasterPasswordLen " символов"), SetTimer(() => ToolTip(), -2200)
                 return
             }
             ToolTip("⚠️ Короткий пароль разрешён только для dev-режима"), SetTimer(() => ToolTip(), -2200)
